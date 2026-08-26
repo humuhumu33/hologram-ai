@@ -1902,7 +1902,13 @@ impl DecodeChatSession {
                 .borrow_mut()
                 .verify_runner_for(bucket, draft as u64)
             {
-                Ok(mut verify) => {
+                Ok(verify) => {
+                    // The wasm tier keeps its eager build (its budget math
+                    // charged the pipeline already); adapt to the lazy
+                    // signature with a one-shot slot.
+                    let mut verify_slot = Some(verify);
+                    let mut make_verify =
+                        || Ok(verify_slot.take().expect("verify built once per turn"));
                     // The drafter is parametric (row `speculative-draft-pairing`):
                     // a catalogue-paired DRAFT MODEL when one is attached, else
                     // the zero-weight prompt-lookup default. Either way the output
@@ -1915,7 +1921,7 @@ impl DecodeChatSession {
                             hologram_ai::speculative::ModelDrafter::new(draft_session);
                         let r = hologram_ai::commands::generate::generate_stream_speculative(
                             session,
-                            &mut verify,
+                            &mut make_verify,
                             &self.tokenizer,
                             &templated,
                             &cfg,
@@ -1929,7 +1935,7 @@ impl DecodeChatSession {
                         let mut drafter = hologram_ai::speculative::PromptLookupDrafter;
                         hologram_ai::commands::generate::generate_stream_speculative(
                             session,
-                            &mut verify,
+                            &mut make_verify,
                             &self.tokenizer,
                             &templated,
                             &cfg,
@@ -1939,6 +1945,8 @@ impl DecodeChatSession {
                         )
                     };
                     result.map_err(|e| err(format!("speculative decode: {e:#}")))?;
+                    // Turn-scoped: the wasm tier rebuilds per turn; drop the
+                    // returned runner with the slot.
                     return String::from_utf8(sink.buffer).map_err(err);
                 }
                 Err(e) => web_sys::console::warn_1(&JsValue::from_str(&format!(

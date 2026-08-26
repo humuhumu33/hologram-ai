@@ -668,16 +668,22 @@ pub fn generate_stream_decode<S: LmSession>(
 /// acceptance rate, never the output. `max_draft` must not exceed
 /// `verify_runner`'s chunk.
 #[allow(clippy::too_many_arguments)]
+/// The verify pipeline is built LAZILY through `make_verify`, on the
+/// drafter's first qualifying proposal: a resident verify pipeline was
+/// measured to tax the plain chunk-1 decode path ~35-40% by cache/residency
+/// interference alone, so novel text (drafter never qualifying) must never
+/// pay for it. The built runner is returned so the caller can cache it
+/// across turns; pass it back in through `make_verify` on the next turn.
 pub fn generate_stream_speculative<S: LmSession>(
     session: &mut DecodeSession<S>,
-    verify_runner: &mut S,
+    make_verify: &mut dyn FnMut() -> Result<S>,
     tokenizer: &dyn Tokenizer,
     prompt: &str,
     cfg: &GenConfig,
     drafter: &mut dyn crate::speculative::Drafter,
     max_draft: usize,
     out: &mut dyn Write,
-) -> Result<String> {
+) -> Result<(String, Option<S>)> {
     let eos = cfg.eos.unwrap_or_else(|| tokenizer.eos_token_id());
     let max_window = session.context_len() as usize;
     // The token rule, shared by the draft-verify acceptance and the plain-step
@@ -777,6 +783,9 @@ pub fn generate_stream_speculative<S: LmSession>(
     // and turn end.
     let mut speculate = draft_cap > 0;
     let mut pending: Option<i64> = None;
+    // Built on the first qualifying proposal; `None` until then, kept for
+    // the rest of the turn (and handed back to the caller) once built.
+    let mut verify: Option<S> = None;
     while generated.len() < budget {
         let cap = draft_cap.min(budget - generated.len());
         // A folded batch ring-writes 1 (pending) + cap rows at the realized
@@ -787,10 +796,12 @@ pub fn generate_stream_speculative<S: LmSession>(
         // target's own tokens, byte for byte — only the acceptance boundary
         // moves.
         if speculate && session.realized_len() + cap + 1 > session.geometry().bucket {
-            session
-                .end_speculation(verify_runner)
-                .context("speculation retire failed")?;
-            verify_runner.evict_resident();
+            if let Some(v) = verify.as_mut() {
+                session
+                    .end_speculation(v)
+                    .context("speculation retire failed")?;
+                v.evict_resident();
+            }
             speculate = false;
         }
         // Decide (and emit) the model's own token for the current position —
@@ -818,6 +829,12 @@ pub fn generate_stream_speculative<S: LmSession>(
         };
         match (draft.is_empty(), pending) {
             (false, Some(p)) => {
+                // First qualifying proposal: NOW the verify pipeline earns
+                // its residency. Build it once; it serves the whole turn.
+                if verify.is_none() {
+                    verify = Some(make_verify().context("building verify pipeline failed")?);
+                }
+                let verify_runner = verify.as_mut().expect("just built");
                 // A failed resident walk poisons the carried truth — there is
                 // no honest "retire and continue" from it, so a verify failure
                 // is the turn's failure, loud (the bucket case is handled
@@ -846,9 +863,13 @@ pub fn generate_stream_speculative<S: LmSession>(
                 // hand the truth back and commit any outstanding pending token
                 // through the plain path, then step under the same rule.
                 if let Some(p) = pending.take() {
-                    session
-                        .end_speculation(verify_runner)
-                        .context("speculation hand-off failed")?;
+                    // With no verify pipeline built, no batch ever ran and
+                    // the K/V truth never left the session — nothing to sync.
+                    if let Some(v) = verify.as_mut() {
+                        session
+                            .end_speculation(v)
+                            .context("speculation hand-off failed")?;
+                    }
                     row = session.step(p).context("decode step failed")?;
                 }
                 let next = next_token(&row, session.realized_len() as u64);
@@ -892,17 +913,19 @@ pub fn generate_stream_speculative<S: LmSession>(
     // Turn end: the session survives across turns — hand any carried truth
     // back so the next turn's prefill reads current bytes. An uncommitted
     // pending token was already emitted; the next turn's transcript feed
-    // realizes it.
-    session
-        .end_speculation(verify_runner)
-        .context("speculation hand-off failed")?;
+    // realizes it. A never-built verify pipeline carried nothing.
+    if let Some(v) = verify.as_mut() {
+        session
+            .end_speculation(v)
+            .context("speculation hand-off failed")?;
+    }
     finish_stream(streamer, &mut acc, out);
     debug_assert_eq!(
         acc,
         tokenizer.decode(&generated),
         "streamed deltas must accumulate to the one-shot decode"
     );
-    Ok(acc)
+    Ok((acc, verify))
 }
 
 #[cfg(test)]
