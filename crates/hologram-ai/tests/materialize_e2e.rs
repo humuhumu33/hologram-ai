@@ -163,7 +163,11 @@ fn corrupt_store_content_fails_integrity() {
     std::fs::create_dir_all(&dir).expect("mkdir");
     let mut wrong = w;
     wrong[0] ^= 0xFF;
-    std::fs::write(dir.join(format!("{kappa}.bin")), &wrong).expect("plant corrupt content");
+    std::fs::write(
+        dir.join(hologram_ai::materialize::kappa_file_name(&kappa)),
+        &wrong,
+    )
+    .expect("plant corrupt content");
 
     let mut store = DirKappaStore::new(&dir);
     let err = materialize_archive(&kform_holo, &mut store)

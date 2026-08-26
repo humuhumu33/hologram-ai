@@ -89,7 +89,7 @@ pub struct DirKappaStore {
 /// entry would silently collapse into invisible streams on one file named
 /// `blake3`. Encode the separator so the store is a plain portable
 /// directory of files on every filesystem.
-fn kappa_file_name(kappa: &str) -> String {
+pub fn kappa_file_name(kappa: &str) -> String {
     format!("{}.bin", kappa.replace(':', "-"))
 }
 
