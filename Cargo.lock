@@ -1232,7 +1232,7 @@ dependencies = [
 [[package]]
 name = "hologram-archive"
 version = "0.10.0"
-source = "git+https://github.com/Hologram-Technologies/hologram.git?rev=47a4955611f79c586380ad73b92f2958a81ad00f#47a4955611f79c586380ad73b92f2958a81ad00f"
+source = "git+https://github.com/humuhumu33/hologram.git?rev=15d155b9b0ca7e6a68b35ab3a010424ffcf4505d#15d155b9b0ca7e6a68b35ab3a010424ffcf4505d"
 dependencies = [
  "bytemuck",
  "hashbrown 0.15.5",
@@ -1269,7 +1269,7 @@ dependencies = [
 [[package]]
 name = "hologram-backend"
 version = "0.10.0"
-source = "git+https://github.com/Hologram-Technologies/hologram.git?rev=47a4955611f79c586380ad73b92f2958a81ad00f#47a4955611f79c586380ad73b92f2958a81ad00f"
+source = "git+https://github.com/humuhumu33/hologram.git?rev=15d155b9b0ca7e6a68b35ab3a010424ffcf4505d#15d155b9b0ca7e6a68b35ab3a010424ffcf4505d"
 dependencies = [
  "bytemuck",
  "hologram-host 0.10.0",
@@ -1296,7 +1296,7 @@ dependencies = [
 [[package]]
 name = "hologram-compiler"
 version = "0.10.0"
-source = "git+https://github.com/Hologram-Technologies/hologram.git?rev=47a4955611f79c586380ad73b92f2958a81ad00f#47a4955611f79c586380ad73b92f2958a81ad00f"
+source = "git+https://github.com/humuhumu33/hologram.git?rev=15d155b9b0ca7e6a68b35ab3a010424ffcf4505d#15d155b9b0ca7e6a68b35ab3a010424ffcf4505d"
 dependencies = [
  "hashbrown 0.15.5",
  "hologram-archive 0.10.0",
@@ -1334,7 +1334,7 @@ dependencies = [
 [[package]]
 name = "hologram-exec"
 version = "0.10.0"
-source = "git+https://github.com/Hologram-Technologies/hologram.git?rev=47a4955611f79c586380ad73b92f2958a81ad00f#47a4955611f79c586380ad73b92f2958a81ad00f"
+source = "git+https://github.com/humuhumu33/hologram.git?rev=15d155b9b0ca7e6a68b35ab3a010424ffcf4505d#15d155b9b0ca7e6a68b35ab3a010424ffcf4505d"
 dependencies = [
  "hashbrown 0.15.5",
  "hologram-archive 0.10.0",
@@ -1363,7 +1363,7 @@ dependencies = [
 [[package]]
 name = "hologram-graph"
 version = "0.10.0"
-source = "git+https://github.com/Hologram-Technologies/hologram.git?rev=47a4955611f79c586380ad73b92f2958a81ad00f#47a4955611f79c586380ad73b92f2958a81ad00f"
+source = "git+https://github.com/humuhumu33/hologram.git?rev=15d155b9b0ca7e6a68b35ab3a010424ffcf4505d#15d155b9b0ca7e6a68b35ab3a010424ffcf4505d"
 dependencies = [
  "hologram-ops 0.10.0",
  "hologram-types 0.10.0",
@@ -1384,7 +1384,7 @@ dependencies = [
 [[package]]
 name = "hologram-host"
 version = "0.10.0"
-source = "git+https://github.com/Hologram-Technologies/hologram.git?rev=47a4955611f79c586380ad73b92f2958a81ad00f#47a4955611f79c586380ad73b92f2958a81ad00f"
+source = "git+https://github.com/humuhumu33/hologram.git?rev=15d155b9b0ca7e6a68b35ab3a010424ffcf4505d#15d155b9b0ca7e6a68b35ab3a010424ffcf4505d"
 dependencies = [
  "uor-foundation",
  "uor-foundation-sdk",
@@ -1419,7 +1419,7 @@ dependencies = [
 [[package]]
 name = "hologram-ops"
 version = "0.10.0"
-source = "git+https://github.com/Hologram-Technologies/hologram.git?rev=47a4955611f79c586380ad73b92f2958a81ad00f#47a4955611f79c586380ad73b92f2958a81ad00f"
+source = "git+https://github.com/humuhumu33/hologram.git?rev=15d155b9b0ca7e6a68b35ab3a010424ffcf4505d#15d155b9b0ca7e6a68b35ab3a010424ffcf4505d"
 dependencies = [
  "hologram-host 0.10.0",
  "hologram-types 0.10.0",
@@ -1471,7 +1471,7 @@ dependencies = [
 [[package]]
 name = "hologram-types"
 version = "0.10.0"
-source = "git+https://github.com/Hologram-Technologies/hologram.git?rev=47a4955611f79c586380ad73b92f2958a81ad00f#47a4955611f79c586380ad73b92f2958a81ad00f"
+source = "git+https://github.com/humuhumu33/hologram.git?rev=15d155b9b0ca7e6a68b35ab3a010424ffcf4505d#15d155b9b0ca7e6a68b35ab3a010424ffcf4505d"
 dependencies = [
  "hologram-host 0.10.0",
  "uor-foundation",
