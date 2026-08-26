@@ -729,6 +729,13 @@ pub fn generate_stream_speculative<S: LmSession>(
     // under the fold, so speculation never engages (plain decode, never
     // worse).
     let draft_cap = max_draft.saturating_sub(1);
+    // Engagement floor: a folded verify batch costs a full M = 1 + K pass
+    // plus a K/V sync on the following miss, so a 1-2 token proposal (prose
+    // is full of trivially recurring suffixes - "the", " of") cannot pay for
+    // itself even when fully accepted. Engage the regime only for proposals
+    // long enough that a decent acceptance beats the batch cost; shorter
+    // proposals decode as plain steps (identical tokens either way).
+    let min_engage = (draft_cap / 3).max(3);
 
     let mut generated: Vec<u32> = Vec::new();
     // Incremental detokenization — same O(N)-total delta streaming as
@@ -800,7 +807,12 @@ pub fn generate_stream_speculative<S: LmSession>(
             // The drafter continues AFTER the pending token.
             let mut seq = session.realized_tokens().to_vec();
             seq.extend(pending);
-            drafter.propose(&seq, cap)?
+            let proposal = drafter.propose(&seq, cap)?;
+            if proposal.len() >= min_engage {
+                proposal
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
@@ -859,9 +871,8 @@ pub fn generate_stream_speculative<S: LmSession>(
                 while speculate && !done && generated.len() < budget {
                     let probe_cap = draft_cap.min(budget - generated.len());
                     if probe_cap > 0
-                        && !drafter
-                            .propose(session.realized_tokens(), probe_cap)?
-                            .is_empty()
+                        && drafter.propose(session.realized_tokens(), probe_cap)?.len()
+                            >= min_engage
                     {
                         break; // recurrence is back — re-enter the folded regime
                     }
