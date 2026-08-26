@@ -741,7 +741,7 @@ pub fn generate_stream_speculative<S: LmSession>(
     // itself even when fully accepted. Engage the regime only for proposals
     // long enough that a decent acceptance beats the batch cost; shorter
     // proposals decode as plain steps (identical tokens either way).
-    let min_engage = (draft_cap / 3).max(3);
+    let min_engage = (draft_cap / 2).max(4);
 
     let mut generated: Vec<u32> = Vec::new();
     // Incremental detokenization — same O(N)-total delta streaming as
@@ -786,6 +786,13 @@ pub fn generate_stream_speculative<S: LmSession>(
     // Built on the first qualifying proposal; `None` until then, kept for
     // the rest of the turn (and handed back to the caller) once built.
     let mut verify: Option<S> = None;
+    // Acceptance-based retirement: recurrence in prose is often shallow —
+    // a qualifying proposal whose tokens the model then rejects costs a
+    // full verify batch for one bonus token. Track the measured acceptance
+    // and retire speculation for the turn once it is evidently not paying.
+    let mut drafted_total = 0usize;
+    let mut accepted_total = 0usize;
+    let mut engaged_batches = 0usize;
     while generated.len() < budget {
         let cap = draft_cap.min(budget - generated.len());
         // A folded batch ring-writes 1 (pending) + cap rows at the realized
@@ -843,6 +850,17 @@ pub fn generate_stream_speculative<S: LmSession>(
                     .speculate(verify_runner, p, &draft, &mut next_token)
                     .context("speculative verify failed")?;
                 let n_accepted = accepted.len();
+                engaged_batches += 1;
+                drafted_total += draft.len();
+                accepted_total += n_accepted;
+                // Retire on measured evidence: after a few batches, if fewer
+                // than half the drafted tokens were accepted, each batch is
+                // costing more than the plain steps it replaces. Hand the
+                // truth back and decode plainly for the rest of the turn
+                // (tokens unchanged — only the regime boundary moves).
+                if engaged_batches >= 3 && accepted_total * 2 < drafted_total {
+                    speculate = false;
+                }
                 let mut stop = false;
                 for t in accepted.into_iter().chain(std::iter::once(bonus)) {
                     if emit(t, &mut generated, &mut acc) {
@@ -869,6 +887,12 @@ pub fn generate_stream_speculative<S: LmSession>(
                         session
                             .end_speculation(v)
                             .context("speculation hand-off failed")?;
+                        // A retired regime (acceptance not paying) also frees
+                        // the verify pipeline's resident stages — its
+                        // residency tax must not outlive its usefulness.
+                        if !speculate {
+                            v.evict_resident();
+                        }
                     }
                     row = session.step(p).context("decode step failed")?;
                 }
