@@ -742,6 +742,14 @@ pub fn generate_stream_speculative<S: LmSession>(
     // long enough that a decent acceptance beats the batch cost; shorter
     // proposals decode as plain steps (identical tokens either way).
     let min_engage = (draft_cap / 2).max(4);
+    /// Optimistic prior — speculation gets a first chance.
+    const EMA_PRIOR: f32 = 0.7;
+    /// Gate: engage the folded regime only while the average holds here.
+    const ENGAGE_EMA: f32 = 0.35;
+    /// Per-batch smoothing (fast: ~the last two batches dominate).
+    const EMA_ALPHA: f32 = 0.5;
+    /// Per-plain-step recovery toward the prior — the re-probe clock.
+    const EMA_RECOVERY: f32 = 0.01;
 
     let mut generated: Vec<u32> = Vec::new();
     // Incremental detokenization — same O(N)-total delta streaming as
@@ -786,13 +794,16 @@ pub fn generate_stream_speculative<S: LmSession>(
     // Built on the first qualifying proposal; `None` until then, kept for
     // the rest of the turn (and handed back to the caller) once built.
     let mut verify: Option<S> = None;
-    // Acceptance-based retirement: recurrence in prose is often shallow —
-    // a qualifying proposal whose tokens the model then rejects costs a
-    // full verify batch for one bonus token. Track the measured acceptance
-    // and retire speculation for the turn once it is evidently not paying.
-    let mut drafted_total = 0usize;
-    let mut accepted_total = 0usize;
-    let mut engaged_batches = 0usize;
+    // EMA acceptance gate: recurrence in prose is often shallow — a
+    // qualifying proposal whose tokens the model then rejects costs a full
+    // verify batch for one bonus token. An exponential moving average of the
+    // per-batch acceptance rate CLOSES the gate when batches stop paying and
+    // (unlike a per-turn retirement) RE-OPENS it: each plain step recovers
+    // the average slightly, so a text that turns structured mid-answer gets
+    // speculation back within a couple dozen tokens, while a persistently
+    // novel text re-probes rarely enough (~one batch per ~35 plain steps,
+    // worst case ≤ ~6% overhead) to stay at plain-decode parity.
+    let mut accept_ema: f32 = EMA_PRIOR;
     while generated.len() < budget {
         let cap = draft_cap.min(budget - generated.len());
         // A folded batch ring-writes 1 (pending) + cap rows at the realized
@@ -826,7 +837,7 @@ pub fn generate_stream_speculative<S: LmSession>(
             let mut seq = session.realized_tokens().to_vec();
             seq.extend(pending);
             let proposal = drafter.propose(&seq, cap)?;
-            if proposal.len() >= min_engage {
+            if proposal.len() >= min_engage && accept_ema >= ENGAGE_EMA {
                 proposal
             } else {
                 Vec::new()
@@ -850,17 +861,8 @@ pub fn generate_stream_speculative<S: LmSession>(
                     .speculate(verify_runner, p, &draft, &mut next_token)
                     .context("speculative verify failed")?;
                 let n_accepted = accepted.len();
-                engaged_batches += 1;
-                drafted_total += draft.len();
-                accepted_total += n_accepted;
-                // Retire on measured evidence: after a few batches, if fewer
-                // than half the drafted tokens were accepted, each batch is
-                // costing more than the plain steps it replaces. Hand the
-                // truth back and decode plainly for the rest of the turn
-                // (tokens unchanged — only the regime boundary moves).
-                if engaged_batches >= 3 && accepted_total * 2 < drafted_total {
-                    speculate = false;
-                }
+                let rate = n_accepted as f32 / draft.len().max(1) as f32;
+                accept_ema = (1.0 - EMA_ALPHA) * accept_ema + EMA_ALPHA * rate;
                 let mut stop = false;
                 for t in accepted.into_iter().chain(std::iter::once(bonus)) {
                     if emit(t, &mut generated, &mut acc) {
@@ -887,20 +889,16 @@ pub fn generate_stream_speculative<S: LmSession>(
                         session
                             .end_speculation(v)
                             .context("speculation hand-off failed")?;
-                        // A retired regime (acceptance not paying) also frees
-                        // the verify pipeline's resident stages — its
-                        // residency tax must not outlive its usefulness.
-                        if !speculate {
-                            v.evict_resident();
-                        }
                     }
                     row = session.step(p).context("decode step failed")?;
+                    accept_ema = (accept_ema + EMA_RECOVERY).min(EMA_PRIOR);
                 }
                 let next = next_token(&row, session.realized_len() as u64);
                 if emit(next, &mut generated, &mut acc) {
                     break;
                 }
                 row = session.step(next).context("decode step failed")?;
+                accept_ema = (accept_ema + EMA_RECOVERY).min(EMA_PRIOR);
                 // Miss hysteresis: STAY on the plain chunk-1 path while the
                 // drafter keeps missing. Each return to the folded regime
                 // costs an `end_speculation` K/V sync on the next miss, so a
@@ -916,6 +914,7 @@ pub fn generate_stream_speculative<S: LmSession>(
                 while speculate && !done && generated.len() < budget {
                     let probe_cap = draft_cap.min(budget - generated.len());
                     if probe_cap > 0
+                        && accept_ema >= ENGAGE_EMA
                         && drafter.propose(session.realized_tokens(), probe_cap)?.len()
                             >= min_engage
                     {
@@ -927,6 +926,7 @@ pub fn generate_stream_speculative<S: LmSession>(
                         break;
                     }
                     row = session.step(next).context("decode step failed")?;
+                    accept_ema = (accept_ema + EMA_RECOVERY).min(EMA_PRIOR);
                 }
                 if done {
                     break;
