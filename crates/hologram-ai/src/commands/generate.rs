@@ -844,6 +844,37 @@ pub fn generate_stream_speculative<S: LmSession>(
                     break;
                 }
                 row = session.step(next).context("decode step failed")?;
+                // Miss hysteresis: STAY on the plain chunk-1 path while the
+                // drafter keeps missing. Each return to the folded regime
+                // costs an `end_speculation` K/V sync on the next miss, so a
+                // missing drafter (novel text) pays one sync per ~two tokens
+                // — measured at ~0.45× plain decode. Probing the drafter is
+                // an O(n) text search, costless by comparison: re-enter the
+                // folded regime only when a probe proposes something. Tokens
+                // and text are unchanged — the same rule at the same
+                // positions — only the regime boundary moves, which is the
+                // "never worse than not drafting" contract made true in
+                // wall-clock as well as in tokens.
+                let mut done = false;
+                while speculate && !done && generated.len() < budget {
+                    let probe_cap = draft_cap.min(budget - generated.len());
+                    if probe_cap > 0
+                        && !drafter
+                            .propose(session.realized_tokens(), probe_cap)?
+                            .is_empty()
+                    {
+                        break; // recurrence is back — re-enter the folded regime
+                    }
+                    let next = next_token(&row, session.realized_len() as u64);
+                    if emit(next, &mut generated, &mut acc) {
+                        done = true;
+                        break;
+                    }
+                    row = session.step(next).context("decode step failed")?;
+                }
+                if done {
+                    break;
+                }
             }
         }
     }
