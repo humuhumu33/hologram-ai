@@ -741,7 +741,12 @@ pub fn generate_stream_speculative<S: LmSession>(
     // itself even when fully accepted. Engage the regime only for proposals
     // long enough that a decent acceptance beats the batch cost; shorter
     // proposals decode as plain steps (identical tokens either way).
-    let min_engage = (draft_cap / 2).max(4);
+    // Only a near-full-length recurrence engages: shallow prose recurrences
+    // (even 5-6 tokens) measured a net loss after batch + residency costs,
+    // while genuinely structured text (repeats, code, format echo) proposes
+    // at the cap. Engaging only at the cap keeps novel prose at exact plain
+    // parity (the pipeline is never even built) and keeps the structured win.
+    let min_engage = draft_cap.max(1);
     /// Optimistic prior — speculation gets a first chance.
     const EMA_PRIOR: f32 = 0.7;
     /// Gate: engage the folded regime only while the average holds here.
