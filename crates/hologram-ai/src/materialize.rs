@@ -84,6 +84,15 @@ pub struct DirKappaStore {
     root: std::path::PathBuf,
 }
 
+/// Filesystem name of a κ entry. κ labels contain `:` (`blake3:<hex>`),
+/// which NTFS interprets as an Alternate Data Stream separator — every
+/// entry would silently collapse into invisible streams on one file named
+/// `blake3`. Encode the separator so the store is a plain portable
+/// directory of files on every filesystem.
+fn kappa_file_name(kappa: &str) -> String {
+    format!("{}.bin", kappa.replace(':', "-"))
+}
+
 impl DirKappaStore {
     /// Create a store rooted at `root`.
     pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
@@ -95,7 +104,7 @@ impl DirKappaStore {
         let kappa = kappa_of(bytes);
         std::fs::create_dir_all(&self.root)
             .with_context(|| format!("creating κ-store dir {}", self.root.display()))?;
-        let path = self.root.join(format!("{kappa}.bin"));
+        let path = self.root.join(kappa_file_name(&kappa));
         std::fs::write(&path, bytes)
             .with_context(|| format!("writing κ content {}", path.display()))?;
         Ok(kappa)
@@ -104,19 +113,19 @@ impl DirKappaStore {
 
 impl KappaStore for DirKappaStore {
     fn resolve(&mut self, kappa: &str) -> Result<Vec<u8>> {
-        let path = self.root.join(format!("{kappa}.bin"));
+        let path = self.root.join(kappa_file_name(kappa));
         std::fs::read(&path).with_context(|| format!("κ `{kappa}` not present in store"))
     }
 
     fn invalidate(&mut self, kappa: &str) {
         // Evaporate the corrupted entry; a directory store has no deeper
         // tier, so the retry then fails loud — fail closed, by construction.
-        let _ = std::fs::remove_file(self.root.join(format!("{kappa}.bin")));
+        let _ = std::fs::remove_file(self.root.join(kappa_file_name(kappa)));
     }
 
     fn resolve_range(&mut self, kappa: &str, offset: u64, len: u64) -> Result<Vec<u8>> {
         use std::io::{Read, Seek, SeekFrom};
-        let path = self.root.join(format!("{kappa}.bin"));
+        let path = self.root.join(kappa_file_name(kappa));
         let mut file = std::fs::File::open(&path)
             .with_context(|| format!("κ `{kappa}` not present in store"))?;
         file.seek(SeekFrom::Start(offset))
@@ -128,7 +137,7 @@ impl KappaStore for DirKappaStore {
     }
 
     fn content_size(&mut self, kappa: &str) -> Result<u64> {
-        let path = self.root.join(format!("{kappa}.bin"));
+        let path = self.root.join(kappa_file_name(kappa));
         Ok(std::fs::metadata(&path)
             .with_context(|| format!("κ `{kappa}` not present in store"))?
             .len())
