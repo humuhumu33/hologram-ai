@@ -321,6 +321,42 @@ fn decode_generates_at_production_head_dim_int8_staged() {
     }
 }
 
+/// Qwen3's REAL geometry decouples `heads * head_dim` from `hidden_size`
+/// (0.6B: 16 x 128 = 2048 vs hidden 1024) — every earlier catalog model had
+/// them equal, so this is the first coverage of the wide-Q decode shape (with
+/// the per-head qk-norm in the loop). Small scale, real structural ratio.
+#[test]
+fn qwen3_wide_q_geometry_decodes() {
+    let dims = Dims {
+        hidden_size: 256,
+        layers: 2,
+        num_attention_heads: 8,
+        num_key_value_heads: 4,
+        head_dim: 64, // q_out 512 = 2 x hidden, kv_out 256 — the 0.6B ratio
+        intermediate_size: 768,
+        vocab_size: 1024,
+        max_position_embeddings: 4096,
+        rope_theta: 1_000_000.0,
+        rms_norm_eps: 1e-6,
+    };
+    // Bisect: the same wide-Q dims WITHOUT qk-norm (Llama layout), and
+    // qk-norm at square geometry, isolate which property breaks.
+    let llama_wide = FamilyScale::new(common::families::LLAMA, dims);
+    let (l1, _) = decode_family(&llama_wide);
+    assert!(l1.iter().all(|x| x.is_finite()), "llama wide-Q broke");
+    println!("[bisect] llama wide-Q decodes");
+    let qwen3_square = FamilyScale::new(common::families::QWEN3, Dims::MODEST);
+    let (l2, _) = decode_family(&qwen3_square);
+    assert!(l2.iter().all(|x| x.is_finite()), "qwen3 square broke");
+    println!("[bisect] qwen3 square (qk-norm) decodes");
+    let scale = FamilyScale::new(common::families::QWEN3, dims);
+    let (logits, tokens) = decode_family(&scale);
+    assert_eq!(logits.len(), dims.vocab_size as usize);
+    assert!(logits.iter().all(|x| x.is_finite()), "non-finite logits");
+    let (_, again) = decode_family(&scale);
+    assert_eq!(tokens, again, "wide-Q qk-norm decode is not reproducible");
+}
+
 #[test]
 fn decode_generates_for_every_supported_family() {
     assert!(

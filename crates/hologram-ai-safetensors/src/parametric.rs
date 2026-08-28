@@ -1678,10 +1678,14 @@ impl<'a> DecoderRecipe<'a> {
             vec![attn_out],
         );
 
+        // Flat width is heads * head_dim (= o_proj's in_features), NOT the
+        // hidden size: Qwen3-class geometry decouples them (0.6B: 2048 vs
+        // 1024). Every earlier catalog model had them equal, which is the
+        // only reason `hidden` ever worked here.
         let attn_out_flat = builder.add_tensor(
             &format!("attn_out_flat_{l}"),
             DType::F32,
-            vec![batch.clone(), seq.clone(), hidden.clone()],
+            vec![batch.clone(), seq.clone(), q_out_dim.clone()],
         );
         builder.add_node(
             AiOp::Reshape { allow_zero: false },

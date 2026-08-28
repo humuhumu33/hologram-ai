@@ -32,6 +32,9 @@ pub struct FamilyLayout {
     /// The LM head reuses the embedding table — no separate `lm_head.weight`
     /// (Qwen2's published convention); the others ship an untied head.
     pub tied_head: bool,
+    /// Per-head RmsNorm on Q and K before RoPE
+    /// (`self_attn.{q,k}_norm.weight`, rank-1 `[head_dim]`) — Qwen3.
+    pub qk_norm: bool,
 }
 
 /// Llama: separate q/k/v/o projections, no attention bias, gate/up/down SwiGLU
@@ -42,6 +45,7 @@ pub const LLAMA: FamilyLayout = FamilyLayout {
     fused_qkv: false,
     fused_gate_up: false,
     tied_head: false,
+    qk_norm: false,
 };
 
 /// Qwen2: the Llama tensor shape plus attention q/k/v biases, with a tied head.
@@ -51,6 +55,18 @@ pub const QWEN2: FamilyLayout = FamilyLayout {
     fused_qkv: false,
     fused_gate_up: false,
     tied_head: true,
+    qk_norm: false,
+};
+
+/// Qwen3: the Llama tensor shape without biases, untied head, plus a per-head
+/// RmsNorm on Q and K (`self_attn.{q,k}_norm.weight`) applied before RoPE.
+pub const QWEN3: FamilyLayout = FamilyLayout {
+    arch: "Qwen3ForCausalLM",
+    qkv_bias: false,
+    fused_qkv: false,
+    fused_gate_up: false,
+    tied_head: false,
+    qk_norm: true,
 };
 
 /// Mistral: tensor-identical to Llama (separate q/k/v and gate/up, no bias,
@@ -61,6 +77,7 @@ pub const MISTRAL: FamilyLayout = FamilyLayout {
     fused_qkv: false,
     fused_gate_up: false,
     tied_head: false,
+    qk_norm: false,
 };
 
 /// Phi3: fused `self_attn.qkv_proj.weight` + fused `mlp.gate_up_proj.weight`,
@@ -71,12 +88,13 @@ pub const PHI3: FamilyLayout = FamilyLayout {
     fused_qkv: true,
     fused_gate_up: true,
     tied_head: false,
+    qk_norm: false,
 };
 
 /// The registry's faithful decoder families — the coverage frontier the
 /// parametric compiler builds end to end (mirrors
 /// `hologram_ai_safetensors::parametric::supported_families`).
-pub const FAITHFUL_FAMILIES: &[FamilyLayout] = &[LLAMA, QWEN2, MISTRAL, PHI3];
+pub const FAITHFUL_FAMILIES: &[FamilyLayout] = &[LLAMA, QWEN2, QWEN3, MISTRAL, PHI3];
 
 /// Model dimensions — the scale knob, held separately from the family layout so
 /// the SAME scale sweeps across families of different layout. No per-model
@@ -294,6 +312,12 @@ impl FamilyScale {
                 m.push((format!("{p}.self_attn.v_proj.weight"), vec![kv_out, h]));
             }
             m.push((format!("{p}.self_attn.o_proj.weight"), vec![h, q_out]));
+
+            // Per-head q/k norms (Qwen3 only) — rank-1 [head_dim].
+            if self.layout.qk_norm {
+                m.push((format!("{p}.self_attn.q_norm.weight"), vec![d.head_dim]));
+                m.push((format!("{p}.self_attn.k_norm.weight"), vec![d.head_dim]));
+            }
 
             // MLP: one fused gate_up_proj (Phi3) or separate gate/up (others).
             if self.layout.fused_gate_up {
