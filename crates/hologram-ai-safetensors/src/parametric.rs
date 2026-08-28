@@ -71,6 +71,13 @@ struct FamilySpec {
     /// `[gate (intermediate); up (intermediate)]` (Phi3), realized by the
     /// same compile-time `Slice` of the fused operand.
     mlp_fused_gate_up: bool,
+    /// The attention applies a per-head RmsNorm to Q and K after the head
+    /// split and before RoPE (`model.layers.N.self_attn.{q,k}_norm.weight`,
+    /// rank-1 `[head_dim]`) — the Qwen3/Gemma2/OLMo2 structure. The recipe
+    /// emits the two norms as ordinary `RmsNorm` nodes feeding the GQA node,
+    /// so every downstream path (monolithic, staged, decode rewrite) runs
+    /// them without attention-op changes.
+    qk_norm: bool,
     /// The family's published checkpoints attend with a sliding window: a
     /// non-null `sliding_window` in the config clamps the effective context
     /// length to `min(max_position_embeddings, sliding_window)` — see
@@ -94,6 +101,7 @@ fn known_families() -> Vec<FamilySpec> {
             attention_qkv_bias: false,
             attention_fused_qkv: false,
             mlp_fused_gate_up: false,
+            qk_norm: false,
             sliding_window_clamp: false,
             unsupported_knobs: &[],
         },
@@ -102,6 +110,20 @@ fn known_families() -> Vec<FamilySpec> {
             attention_qkv_bias: true,
             attention_fused_qkv: false,
             mlp_fused_gate_up: false,
+            qk_norm: false,
+            sliding_window_clamp: false,
+            unsupported_knobs: &[],
+        },
+        // Qwen3: the Llama tensor schema without biases, plus a per-head
+        // RmsNorm on Q and K (`self_attn.{q,k}_norm.weight`) before RoPE.
+        // `head_dim` is explicit in the config (128 even where
+        // hidden_size/num_heads differs).
+        FamilySpec {
+            name: "Qwen3ForCausalLM".into(),
+            attention_qkv_bias: false,
+            attention_fused_qkv: false,
+            mlp_fused_gate_up: false,
+            qk_norm: true,
             sliding_window_clamp: false,
             unsupported_knobs: &[],
         },
@@ -113,6 +135,7 @@ fn known_families() -> Vec<FamilySpec> {
             attention_qkv_bias: false,
             attention_fused_qkv: false,
             mlp_fused_gate_up: false,
+            qk_norm: false,
             sliding_window_clamp: true,
             unsupported_knobs: &[],
         },
@@ -124,6 +147,7 @@ fn known_families() -> Vec<FamilySpec> {
             attention_qkv_bias: false,
             attention_fused_qkv: true,
             mlp_fused_gate_up: true,
+            qk_norm: false,
             sliding_window_clamp: true,
             unsupported_knobs: &[],
         },
@@ -140,6 +164,7 @@ pub fn supported_families() -> Vec<&'static str> {
     vec![
         "LlamaForCausalLM",
         "Qwen2ForCausalLM",
+        "Qwen3ForCausalLM",
         "MistralForCausalLM",
         "Phi3ForCausalLM",
     ]
@@ -198,13 +223,18 @@ fn select_family(config: &Value, keys: &[String]) -> Result<FamilySpec> {
 fn derive_family(name: &str, keys: &[String]) -> Result<FamilySpec> {
     let has = |suffix: &str| keys.iter().any(|k| k.contains(suffix));
 
-    // qk-norm attention (Qwen3, Gemma2, OLMo2) applies an RmsNorm to Q and K
-    // the recipe does not emit — building without it is a wrong number.
+    // qk-norm attention (Qwen3, Gemma2, OLMo2) applies a per-head RmsNorm to
+    // Q and K, which the recipe now emits when the manifest carries the norm
+    // tensors. Exactly one of the pair present is a malformed checkpoint —
+    // building either way would be a wrong number, so it fails loud.
+    let has_q_norm = has("self_attn.q_norm.weight");
+    let has_k_norm = has("self_attn.k_norm.weight");
     ensure!(
-        !has("self_attn.q_norm.weight") && !has("self_attn.k_norm.weight"),
-        "architecture `{name}` is unrecognized and its manifest carries qk-norm tensors \
-         (`self_attn.q_norm`/`k_norm`), which the generic decoder recipe does not implement"
+        has_q_norm == has_k_norm,
+        "architecture `{name}` is unrecognized and its manifest carries only one of the \
+         qk-norm pair (`self_attn.q_norm`/`k_norm`) — a qk-normalized attention needs both"
     );
+    let qk_norm = has_q_norm && has_k_norm;
 
     let attention_fused_qkv = has("self_attn.qkv_proj.weight");
     let mlp_fused_gate_up = has("mlp.gate_up_proj.weight");
@@ -222,6 +252,7 @@ fn derive_family(name: &str, keys: &[String]) -> Result<FamilySpec> {
         attention_qkv_bias: has("self_attn.q_proj.bias"),
         attention_fused_qkv,
         mlp_fused_gate_up,
+        qk_norm,
         // A derived checkpoint that declares `sliding_window` gets the same
         // honest ceiling as the registered windowed family (Mistral): the
         // recipe attends fully, which is EXACT only while the context never
@@ -1563,6 +1594,63 @@ impl<'a> DecoderRecipe<'a> {
             vec![v_out],
         );
 
+        // QK-norm (Qwen3-family): a per-head RmsNorm over `head_dim` applied
+        // to Q and K after the head split and BEFORE RoPE (which the GQA node
+        // applies internally) — the transformers order. The norm weight is
+        // rank-1 `[head_dim]` and the lowering normalizes the LAST axis of an
+        // operand of any rank, so the 4D Q/K need no extra reshape.
+        let (q_attn, k_attn) = if family.qk_norm {
+            let q_norm_weight = add_weight_f32(
+                builder,
+                manifest,
+                &format!("model.layers.{l}.self_attn.q_norm.weight"),
+                vec![head_dim_expr.clone()],
+            );
+            let q_normed = builder.add_tensor(
+                &format!("q_normed_{l}"),
+                DType::F32,
+                vec![
+                    batch.clone(),
+                    seq.clone(),
+                    n_heads_expr.clone(),
+                    head_dim_expr.clone(),
+                ],
+            );
+            builder.add_node(
+                AiOp::RmsNorm {
+                    epsilon: cfg.rms_norm_eps,
+                },
+                vec![q_out, q_norm_weight],
+                vec![q_normed],
+            );
+            let k_norm_weight = add_weight_f32(
+                builder,
+                manifest,
+                &format!("model.layers.{l}.self_attn.k_norm.weight"),
+                vec![head_dim_expr.clone()],
+            );
+            let k_normed = builder.add_tensor(
+                &format!("k_normed_{l}"),
+                DType::F32,
+                vec![
+                    batch.clone(),
+                    seq.clone(),
+                    n_kv_heads_expr.clone(),
+                    head_dim_expr.clone(),
+                ],
+            );
+            builder.add_node(
+                AiOp::RmsNorm {
+                    epsilon: cfg.rms_norm_eps,
+                },
+                vec![k_out, k_norm_weight],
+                vec![k_normed],
+            );
+            (q_normed, k_normed)
+        } else {
+            (q_out, k_out)
+        };
+
         // GQA — the rotary law from the model's own config (`rope_theta`,
         // `rope_scaling`, `partial_rotary_factor`).
         let attn_out = builder.add_tensor(
@@ -1586,7 +1674,7 @@ impl<'a> DecoderRecipe<'a> {
                 qk_norm: false,
                 rope: Some(cfg.rope.clone()),
             },
-            vec![q_out, k_out, v_out],
+            vec![q_attn, k_attn, v_out],
             vec![attn_out],
         );
 
@@ -2929,22 +3017,36 @@ mod tests {
     }
 
     #[test]
-    fn derived_family_rejects_a_qk_norm_manifest() {
-        // A qk-normalized decoder (Qwen3/Gemma2/OLMo2 shape) shares the Llama
-        // tensor names but adds q_norm/k_norm the recipe does not emit —
-        // building without them would be silently wrong, so it fails loud.
+    fn qwen3_family_builds_with_qk_norm() {
+        // A qk-normalized decoder (Qwen3/Gemma2/OLMo2 shape): the registered
+        // Qwen3 family emits the per-head q/k RmsNorm nodes and builds.
         let mut config = tiny_llama_config();
         config["architectures"] = serde_json::json!(["Qwen3ForCausalLM"]);
         let mut keys = decoder_keys(2, false, false);
+        for l in 0..2 {
+            keys.push(format!("model.layers.{l}.self_attn.q_norm.weight"));
+            keys.push(format!("model.layers.{l}.self_attn.k_norm.weight"));
+        }
+        let dtypes = vec![DType::F32; keys.len()];
+        build_parametric_graph_from_manifest(&config, &keys, &dtypes, None)
+            .expect("a Qwen3 qk-norm manifest must build");
+    }
+
+    #[test]
+    fn lone_qk_norm_tensor_fails_loud() {
+        // Exactly one of the q/k norm pair is a malformed checkpoint — the
+        // derivation refuses it rather than guessing.
+        let mut config = tiny_llama_config();
+        config["architectures"] = serde_json::json!(["NovelQkNormForCausalLM"]);
+        let mut keys = decoder_keys(2, false, false);
         keys.push("model.layers.0.self_attn.q_norm.weight".to_string());
-        keys.push("model.layers.0.self_attn.k_norm.weight".to_string());
         let dtypes = vec![DType::F32; keys.len()];
         let err = build_parametric_graph_from_manifest(&config, &keys, &dtypes, None)
             .err()
-            .expect("a qk-norm manifest must fail loud");
+            .expect("a lone q_norm tensor must fail loud");
         assert!(
             err.to_string().contains("qk-norm"),
-            "names the unsupported feature: {err}"
+            "names the malformed pair: {err}"
         );
     }
 
@@ -3018,6 +3120,7 @@ mod tests {
             vec![
                 "LlamaForCausalLM",
                 "Qwen2ForCausalLM",
+                "Qwen3ForCausalLM",
                 "MistralForCausalLM",
                 "Phi3ForCausalLM",
             ]

@@ -552,7 +552,8 @@ fn characteristic_fixture(family: &str, e: &UseCaseExpects) -> (serde_json::Valu
             }
             m
         }
-        // Qwen3: adds per-head q/k RMSNorm the generic recipe cannot represent.
+        // Qwen3: adds per-head q/k RMSNorm, emitted by the recipe since the
+        // qk-norm port — builds from its characteristic manifest.
         "Qwen3ForCausalLM" => {
             let mut m = base();
             for l in 0..e.num_hidden_layers {
@@ -644,6 +645,7 @@ const FAITHFUL_DECODER_FAMILIES: &[&str] = &[
     "LlamaForCausalLM",
     "MistralForCausalLM",
     "Qwen2ForCausalLM",
+    "Qwen3ForCausalLM",
     "Phi3ForCausalLM",
 ];
 

@@ -6,8 +6,9 @@ Feature: Architecture-family coverage of the parametric recipe, measured
   DERIVED from its tensor manifest — so the honest question is faithfulness:
   given each family's OWN characteristic tensor layout, does the generic
   gated-SwiGLU decoder recipe represent it, or reject it loud? A family whose
-  real tensors match the recipe (Llama, Mistral, Qwen2, Phi3) builds; a family
-  the recipe cannot faithfully represent — per-head qk-norm (Qwen3), GeGLU
+  real tensors match the recipe (Llama, Mistral, Qwen2, Qwen3 with its
+  per-head qk-norm, Phi3) builds; a family
+  the recipe cannot faithfully represent — GeGLU
   (Gemma2), sparse MoE (Mixtral), Conv1D attention (GPT-2), a fused
   query_key_value block (GPT-NeoX), a bidirectional encoder (BERT) — is
   rejected rather than silently mis-built. The probe measures this frontier;
