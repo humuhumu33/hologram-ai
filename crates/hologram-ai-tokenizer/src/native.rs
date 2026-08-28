@@ -212,13 +212,29 @@ impl NativeTokenizer {
 
         // Parse vocab: string → id map
         let vocab_obj = model["vocab"].as_object().context("missing model.vocab")?;
-        let vocab_map: HashMap<String, u32> = vocab_obj
+        let mut vocab_map: HashMap<String, u32> = vocab_obj
             .iter()
             .map(|(k, v)| {
                 let id = v.as_u64().unwrap_or(0) as u32;
                 (k.clone(), id)
             })
             .collect();
+        // `added_tokens` live OUTSIDE `model.vocab` in tokenizer.json (HF
+        // convention) yet are real single-token ids — `<|im_start|>`,
+        // `<|im_end|>`, Qwen3's `<think>`. Without merging them the ids are
+        // unresolvable: eos falls back to the wrong default, ChatML markers
+        // BPE-shred into text fragments, and decode cannot name the ids.
+        // Merged for lookup/decode; atomic ENCODE splicing remains the
+        // caller's job (the ChatML wrapper), since BPE merges cannot build
+        // an added token out of pieces.
+        if let Some(added) = json.get("added_tokens").and_then(|v| v.as_array()) {
+            for t in added {
+                let content = t["content"].as_str().unwrap_or("");
+                if let (false, Some(id)) = (content.is_empty(), t["id"].as_u64()) {
+                    vocab_map.entry(content.to_string()).or_insert(id as u32);
+                }
+            }
+        }
         let vocab = VocabTable::from_vocab_map(&vocab_map);
 
         // Parse merges — can be either ["a", "b"] arrays or "a b" strings
