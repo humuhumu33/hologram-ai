@@ -1952,9 +1952,15 @@ impl<'a> DecoderRecipe<'a> {
         norm_out
     }
 
-    /// The manifest tensor the LM head reads (tied → the embedding table).
+    /// The manifest tensor the LM head reads. The checkpoint's own bytes
+    /// win: a shipped `lm_head.weight` is used even when the config declares
+    /// `tie_word_embeddings` (Qwen3 ships both; a faithful tied checkpoint's
+    /// head bytes EQUAL the embedding table), because the staged partition
+    /// must cover every manifest tensor exactly — an unconsumed shipped head
+    /// fails the coverage gate loud. Tie is realized only when no separate
+    /// head tensor exists (the transformers save convention).
     fn head_source(&self) -> &'static str {
-        let tied = self.cfg.tie_word_embeddings || !self.manifest.contains("lm_head.weight");
+        let tied = !self.manifest.contains("lm_head.weight");
         if tied {
             "model.embed_tokens.weight"
         } else {
@@ -2029,7 +2035,8 @@ impl<'a> DecoderRecipe<'a> {
 
         // The tied head is transposed by the shared linear-layer wiring
         // ([vocab, hidden] → [hidden, vocab]) for the matmul orientation.
-        let tied = self.cfg.tie_word_embeddings || !manifest.contains("lm_head.weight");
+        // Tied iff the checkpoint ships no separate head — see head_source.
+        let tied = !manifest.contains("lm_head.weight");
         let head_shape = vec![dims.vocab.clone(), dims.hidden.clone()];
         let (head_weight, head_weight_name) = if tied {
             let head_bytes_source = "model.embed_tokens.weight";
