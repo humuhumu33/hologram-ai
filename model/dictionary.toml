@@ -191,6 +191,16 @@ executor = "rust"
 feature = "features/suites/s2_compilation/deterministic_compile.feature"
 
 [[row]]
+id = "prism-canonical-manifest"
+statement = "A compiled archive can bake its prism contract: the canonical hologram-ai/archive/1 manifest (κ = blake3 of exact canonical bytes; compile equivalence = κ equality), admitted at load through strict decode, normalization, and the kernel-extracted validator conjunction; a tampered manifest is refused, an absent one loads unchanged."
+stage = "S2"
+status = "build"
+oracles = ["prism-contract"]
+tier = "suite"
+executor = "rust"
+feature = "features/suites/s2_compilation/prism_canonical_manifest.feature"
+
+[[row]]
 id = "parametricity"
 statement = "No canonical-instance constant leaks into generic code: an arbitrary use-case instantiates the same pipeline end-to-end, and the anti-hardcode gate holds."
 stage = "S2"

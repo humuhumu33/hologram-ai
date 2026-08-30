@@ -77,6 +77,10 @@ uor-foundation = "0.5.2"
 # as its dedup / warm-start identity (architecture §8). The format features
 # enable the ONNX / GGUF / JSON canonical realizations.
 uor-addr = { version = "0.2", features = ["onnx", "gguf"] }
+# The formal contract layer for compiled archives (humuhumu33/hologram-ai-prism):
+# canonical `hologram-ai/archive/1` manifest + kernel-extracted admission
+# validators. Pinned by rev to the Stage-2 lane-green commit.
+prism-archive = { git = "https://github.com/humuhumu33/hologram-ai-prism", rev = "18d602ade7891dc79a51323caf33551138006e01" }
 
 bytemuck.workspace     = true
 half.workspace         = true

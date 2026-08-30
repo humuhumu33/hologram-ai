@@ -16,6 +16,7 @@ pub mod decode;
 pub mod download;
 pub mod engine;
 pub mod materialize;
+pub mod prism;
 pub mod quantized;
 pub mod runner;
 pub mod speculative;
