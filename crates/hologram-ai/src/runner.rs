@@ -81,6 +81,15 @@ impl HoloRunner {
         let session = InferenceSession::load(&bytes, backend)
             .map_err(|e| anyhow::anyhow!("loading .holo archive: {e:?}"))?;
         drop(bytes);
+        // Prism admission (row `prism-canonical-manifest`): an archive that
+        // bakes a contract manifest is admitted through it — strict decode,
+        // normalization, and the kernel-extracted validator conjunction — or
+        // refused. Archives without the section load unchanged.
+        if let Some(manifest) = session.extension(crate::prism::PRISM_MANIFEST_EXT) {
+            let manifest = manifest.to_vec();
+            crate::prism::admit_bytes(&manifest)
+                .context("the archive's baked prism manifest was refused")?;
+        }
         Ok(Self {
             session,
             kv_carry: Default::default(),

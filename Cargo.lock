@@ -1035,6 +1035,7 @@ dependencies = [
  "indicatif",
  "memmap2",
  "parking_lot",
+ "prism-archive",
  "reqwest",
  "rkyv",
  "serde",
@@ -2537,6 +2538,20 @@ dependencies = [
  "proc-macro2",
  "syn",
 ]
+
+[[package]]
+name = "prism-archive"
+version = "0.1.0"
+source = "git+https://github.com/humuhumu33/hologram-ai-prism?rev=18d602ade7891dc79a51323caf33551138006e01#18d602ade7891dc79a51323caf33551138006e01"
+dependencies = [
+ "blake3",
+ "prism-validators",
+]
+
+[[package]]
+name = "prism-validators"
+version = "0.1.0"
+source = "git+https://github.com/humuhumu33/hologram-ai-prism?rev=18d602ade7891dc79a51323caf33551138006e01#18d602ade7891dc79a51323caf33551138006e01"
 
 [[package]]
 name = "proc-macro2"

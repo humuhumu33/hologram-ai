@@ -923,6 +923,8 @@ struct BddWorld {
     archive: Option<Vec<u8>>,
     // S2 — deterministic compile (row `deterministic-compile`)
     det_fixture: Option<(serde_json::Value, DetManifest)>,
+    // S2 — prism contract (row `prism-canonical-manifest`)
+    prism_runs: Option<Vec<(Vec<u8>, String, Vec<u8>)>>, // manifest bytes, prism κ, archive
     det_mono: Option<Vec<String>>,
     det_staged: Option<Vec<Vec<String>>>,
     goldens: Vec<GoldenVector>,
@@ -1431,6 +1433,110 @@ async fn then_safetensors_identical(w: &mut BddWorld) {
             "`{}`: data bytes diverge from the reference",
             entry.name
         );
+    }
+}
+
+
+// ────────────────── S2 — the prism contract ─────────────────────────────────
+
+/// Compile the handshake-tiny fixture with the prism manifest baked as an
+/// archive extension. Returns (manifest bytes, prism κ, archive bytes).
+fn compile_with_prism(config: &serde_json::Value, manifest: &DetManifest) -> (Vec<u8>, String, Vec<u8>) {
+    use hologram_ai::compiler::ArchiveSections;
+    use hologram_ai::prism::{self, PrismProvenance, PRISM_MANIFEST_EXT};
+    let keys: Vec<String> = manifest.iter().map(|(n, _)| n.clone()).collect();
+    let dtypes = vec![DType::F32; keys.len()];
+    let mut graph = build_parametric_graph_from_manifest(config, &keys, &dtypes, None)
+        .expect("the k-form graph builds from config + manifest");
+    bind_external_kappas(&mut graph, manifest);
+    let config_kappa = kappa_of(config.to_string().as_bytes());
+    let manifest_kappa = kappa_of(format!("{manifest:?}").as_bytes());
+    let mut source_kappas = vec![config_kappa.clone(), manifest_kappa.clone()];
+    source_kappas.sort();
+    source_kappas.dedup();
+    let prism_manifest = prism::graph_manifest(
+        &graph,
+        "lm.forward",
+        "forward",
+        PrismProvenance {
+            config_kappa,
+            tensor_manifest_kappa: manifest_kappa,
+            source_kappas,
+            substrate_witnesses: vec!["hologram-ai-prism@18d602ad".to_string()],
+        },
+    )
+    .expect("the compiled graph yields an admissible prism manifest");
+    let (bytes, kappa) = prism::manifest_bytes_and_kappa(&prism_manifest);
+    let mut sections = ArchiveSections::new();
+    sections.add_extension(PRISM_MANIFEST_EXT, bytes.clone());
+    let archive = ModelCompiler::default()
+        .compile_with_sections(ModelSource::AiGraph(graph), sections)
+        .expect("the k-form graph compiles with the prism section");
+    (bytes, kappa, archive.bytes)
+}
+
+#[when("the k-form graph is compiled with the prism manifest baked, twice")]
+async fn when_prism_compiled_twice(w: &mut BddWorld) {
+    let (config, manifest) = det_fixture(w).clone();
+    let runs = (0..2).map(|_| compile_with_prism(&config, &manifest)).collect();
+    w.prism_runs = Some(runs);
+}
+
+#[then("both compiles bake byte-identical manifests with one stable prism kappa")]
+async fn then_prism_stable(w: &mut BddWorld) {
+    let runs = w.prism_runs.as_ref().expect("the prism compiles ran");
+    let (first_bytes, first_kappa, _) = &runs[0];
+    for (bytes, kappa, _) in runs {
+        assert_eq!(bytes, first_bytes, "prism manifest bytes diverge across compiles");
+        assert_eq!(kappa, first_kappa, "prism κ diverges across compiles");
+    }
+    assert!(first_kappa.starts_with("blake3:"), "the prism κ is a blake3 label");
+}
+
+#[then("the baked manifest strictly decodes and admits through the extracted validators")]
+async fn then_prism_admits(w: &mut BddWorld) {
+    let runs = w.prism_runs.as_ref().expect("the prism compiles ran");
+    let (bytes, _, _) = &runs[0];
+    let decoded = hologram_ai::prism::admit_bytes(bytes).expect("the baked manifest admits");
+    assert_eq!(decoded.components.len(), 1);
+    assert!(!decoded.weights.is_empty(), "the manifest binds weights");
+    // Noncanonical bytes are refused with the canonical spelling available.
+    let spaced = {
+        let text = String::from_utf8(bytes.clone()).expect("manifest bytes are UTF-8");
+        text.replacen("\"schema\":", "\"schema\": ", 1).into_bytes()
+    };
+    let err = hologram_ai::prism::admit_bytes(&spaced).expect_err("noncanonical bytes are refused");
+    assert!(err.to_string().contains("HP3002"), "refusal names HP3002: {err}");
+}
+
+#[then("a runner loads the manifest-bearing archive but refuses a tampered manifest")]
+async fn then_prism_runner_gate(w: &mut BddWorld) {
+    use hologram_ai::compiler::ArchiveSections;
+    use hologram_ai::prism::PRISM_MANIFEST_EXT;
+    let runs = w.prism_runs.as_ref().expect("the prism compiles ran");
+    let (bytes, _, archive) = &runs[0];
+    HoloRunner::from_bytes(archive.clone()).expect("the manifest-bearing archive loads");
+    // Rebuild the same fixture with a tampered (noncanonical) manifest baked:
+    // the runner must refuse it at load.
+    let (config, manifest) = det_fixture(w).clone();
+    let keys: Vec<String> = manifest.iter().map(|(n, _)| n.clone()).collect();
+    let dtypes = vec![DType::F32; keys.len()];
+    let mut graph = build_parametric_graph_from_manifest(&config, &keys, &dtypes, None)
+        .expect("the k-form graph builds from config + manifest");
+    bind_external_kappas(&mut graph, &manifest);
+    let mut tampered = bytes.clone();
+    tampered.extend_from_slice(b" ");
+    let mut sections = ArchiveSections::new();
+    sections.add_extension(PRISM_MANIFEST_EXT, tampered);
+    let bad = ModelCompiler::default()
+        .compile_with_sections(ModelSource::AiGraph(graph), sections)
+        .expect("compilation itself does not police extensions");
+    match HoloRunner::from_bytes(bad.bytes) {
+        Ok(_) => panic!("a tampered manifest must be refused at load"),
+        Err(err) => assert!(
+            err.to_string().contains("prism"),
+            "the refusal names the prism gate: {err}"
+        ),
     }
 }
 
@@ -4340,14 +4446,11 @@ async fn when_spec_vs_plain(w: &mut BddWorld) {
         .expect("plain step decode completes");
 
     let mut spec = spec_decode_session(&store.path, *bucket as u64);
-    let mut verify = HoloRunner::from_bytes(verify_archive(
-        &store.path,
-        *bucket as u64,
-        SPEC_DRAFT as u64,
-    ))
-    .expect("verify archive loads");
+    let store_path = store.path.clone();
+    let bucket = *bucket as u64;
+    let mut verify = || HoloRunner::from_bytes(verify_archive(&store_path, bucket, SPEC_DRAFT as u64));
     let mut sink = Vec::new();
-    let spec_text = generate_stream_speculative(
+    let (spec_text, _verify) = generate_stream_speculative(
         &mut spec,
         &mut verify,
         &DecimalTok,
@@ -4388,14 +4491,11 @@ async fn when_spec_vs_plain_sampled(w: &mut BddWorld, temperature: f64) {
         .expect("plain sampled decode completes");
 
     let mut spec = spec_decode_session(&store.path, *bucket as u64);
-    let mut verify = HoloRunner::from_bytes(verify_archive(
-        &store.path,
-        *bucket as u64,
-        SPEC_DRAFT as u64,
-    ))
-    .expect("verify archive loads");
+    let store_path = store.path.clone();
+    let bucket = *bucket as u64;
+    let mut verify = || HoloRunner::from_bytes(verify_archive(&store_path, bucket, SPEC_DRAFT as u64));
     let mut sink = Vec::new();
-    let spec_text = generate_stream_speculative(
+    let (spec_text, _verify) = generate_stream_speculative(
         &mut spec,
         &mut verify,
         &DecimalTok,
@@ -4442,14 +4542,11 @@ async fn when_spec_draft_model(w: &mut BddWorld, temperature: f64) {
     let mut target = spec_decode_session(&store.path, *bucket as u64);
     let draft = spec_decode_session(&store.path, *bucket as u64);
     let mut drafter = ModelDrafter::new(draft);
-    let mut verify = HoloRunner::from_bytes(verify_archive(
-        &store.path,
-        *bucket as u64,
-        SPEC_DRAFT as u64,
-    ))
-    .expect("verify archive loads");
+    let store_path = store.path.clone();
+    let bucket = *bucket as u64;
+    let mut verify = || HoloRunner::from_bytes(verify_archive(&store_path, bucket, SPEC_DRAFT as u64));
     let mut sink = Vec::new();
-    let spec_text = generate_stream_speculative(
+    let (spec_text, _verify) = generate_stream_speculative(
         &mut target,
         &mut verify,
         &DecimalTok,
@@ -4485,14 +4582,11 @@ async fn when_spec_passes(w: &mut BddWorld) {
         ..Default::default()
     };
     let mut spec = spec_decode_session(&store.path, *bucket as u64);
-    let mut verify = HoloRunner::from_bytes(verify_archive(
-        &store.path,
-        *bucket as u64,
-        SPEC_DRAFT as u64,
-    ))
-    .expect("verify archive loads");
+    let store_path = store.path.clone();
+    let bucket = *bucket as u64;
+    let mut verify = || HoloRunner::from_bytes(verify_archive(&store_path, bucket, SPEC_DRAFT as u64));
     let mut sink = Vec::new();
-    let text = generate_stream_speculative(
+    let (text, _verify) = generate_stream_speculative(
         &mut spec,
         &mut verify,
         &DecimalTok,
@@ -4543,14 +4637,11 @@ async fn when_spec_across_boundary(w: &mut BddWorld) {
         .expect("plain step decode grows and completes");
 
     let mut spec = growing(&store.path, *bucket as u64);
-    let mut verify = HoloRunner::from_bytes(verify_archive(
-        &store.path,
-        *bucket as u64,
-        SPEC_DRAFT as u64,
-    ))
-    .expect("verify archive loads");
+    let store_path = store.path.clone();
+    let bucket = *bucket as u64;
+    let mut verify = || HoloRunner::from_bytes(verify_archive(&store_path, bucket, SPEC_DRAFT as u64));
     let mut sink = Vec::new();
-    let spec_text = generate_stream_speculative(
+    let (spec_text, _verify) = generate_stream_speculative(
         &mut spec,
         &mut verify,
         &DecimalTok,

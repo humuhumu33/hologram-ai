@@ -183,3 +183,12 @@ sha256 = "bc121ce8eef5dad6154908de469b66973a111c315d25f278a4d939dd1c537176"
 [[oracle.artifacts]]
 path = "oracles/fixture/reference-transcript.json"
 sha256 = "e12ba7a6015702422f8ad074966512c575d70c9396a14831b5090c481443ea6a"
+
+[[oracle]]
+id = "prism-contract"
+authority = "hologram-ai-prism — the formal contract layer's own V&V surface"
+source = "https://github.com/humuhumu33/hologram-ai-prism"
+pin = "18d602ade7891dc79a51323caf33551138006e01"
+license = "MIT OR Apache-2.0"
+kind = "substrate-witness"
+note = "Canonical hologram-ai/archive/1 manifest + admission validators extracted from a kernel-verified Lean module (Lean 4.32.1, leanchecker replay, empty observed axiom sets); that repository's vv gates + Lean lane replay are its witness surface."
